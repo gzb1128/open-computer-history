@@ -17,6 +17,7 @@ import {
   memoryDirectory,
   memoryFilesForInterval,
 } from "./history-store.js";
+import { getSummaryModel } from "./settings.js";
 
 export async function summarizeRecentHistory({ minutes }: { minutes: number }) {
   const end = new Date();
@@ -139,6 +140,9 @@ async function runCodexProcess(
   outputPath: string,
 ): Promise<void> {
   const binary = process.env.OPEN_HISTORY_CODEX_BIN ?? "codex";
+  // Read per invocation so a long-running pipeline picks up `config.json`
+  // edits without a restart.
+  const model = await getSummaryModel();
   const args = [
     "exec",
     "--skip-git-repo-check",
@@ -158,6 +162,9 @@ async function runCodexProcess(
     'model_providers.openai-memgen.http_headers={ "X-OpenAI-Memgen-Request" = "true" }',
     "-c",
     'model_reasoning_effort="medium"',
+    // `-m` is explicit: without it Codex resolves the account's default model,
+    // which is unrelated to the memory defaults and changes with the catalog.
+    ...(model === undefined ? [] : ["-m", model]),
     "-c",
     "features.memories=false",
     "-c",

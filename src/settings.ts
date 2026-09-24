@@ -34,15 +34,55 @@ const defaultSettings: ComputerHistorySettings = {
   showMenuBarIcon: true,
 };
 
-export async function getComputerHistorySettings(): Promise<ComputerHistorySettings> {
+function configPath(): string {
+  return join(historyHome(), "config.json");
+}
+
+/**
+ * Reads `config.json` as stored, without a schema.
+ *
+ * `config.json` also carries settings this module does not model — the CLI's
+ * own `captureText` opt-out and the fork-local `summaryModel` — so callers that
+ * write the file must start from these entries instead of a parsed subset.
+ * A missing or unreadable file reads as empty.
+ */
+async function readComputerHistoryConfig(): Promise<
+  Record<string, unknown>
+> {
   try {
-    const raw: unknown = JSON.parse(
-      await readFile(join(historyHome(), "config.json"), "utf8"),
-    );
-    return computerHistorySettingsSchema.parse(raw);
+    const raw: unknown = JSON.parse(await readFile(configPath(), "utf8"));
+    return typeof raw === "object" && raw !== null && !Array.isArray(raw)
+      ? (raw as Record<string, unknown>)
+      : {};
   } catch {
-    return structuredClone(defaultSettings);
+    return {};
   }
+}
+
+/**
+ * The model the summarizer asks Codex to use, or `undefined` to leave the
+ * choice to Codex.
+ *
+ * This is a fork-local addition: it is deliberately absent from
+ * `computerHistorySettingsSchema`, which mirrors the recovered settings
+ * surface. Blank, non-string, and absent values all mean "unset". Codex accepts
+ * unknown model names without an error and falls back to guessed metadata, so
+ * a typo here degrades quietly rather than failing.
+ */
+export async function getSummaryModel(): Promise<string | undefined> {
+  const configured = (await readComputerHistoryConfig())["summaryModel"];
+  if (typeof configured !== "string") {
+    return undefined;
+  }
+  const trimmed = configured.trim();
+  return trimmed === "" ? undefined : trimmed;
+}
+
+export async function getComputerHistorySettings(): Promise<ComputerHistorySettings> {
+  const parsed = computerHistorySettingsSchema.safeParse(
+    await readComputerHistoryConfig(),
+  );
+  return parsed.success ? parsed.data : structuredClone(defaultSettings);
 }
 
 export async function updateComputerHistorySettings(
@@ -50,13 +90,17 @@ export async function updateComputerHistorySettings(
 ): Promise<ComputerHistorySettings> {
   validateRules(settings);
   const parsed = computerHistorySettingsSchema.parse(settings);
-  const configPath = join(historyHome(), "config.json");
-  const temporaryPath = `${configPath}.tmp-${process.pid}`;
-  await mkdir(dirname(configPath), { recursive: true });
-  await writeFile(temporaryPath, `${JSON.stringify(parsed, null, 2)}\n`, {
+  // Replace only the recovered keys. Writing `parsed` alone would drop every
+  // entry the schema does not model, silently reverting `captureText` to the
+  // recorder's default and deleting a configured `summaryModel`.
+  const merged = { ...(await readComputerHistoryConfig()), ...parsed };
+  const path = configPath();
+  const temporaryPath = `${path}.tmp-${process.pid}`;
+  await mkdir(dirname(path), { recursive: true });
+  await writeFile(temporaryPath, `${JSON.stringify(merged, null, 2)}\n`, {
     mode: 0o600,
   });
-  await rename(temporaryPath, configPath);
+  await rename(temporaryPath, path);
   return parsed;
 }
 

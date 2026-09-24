@@ -181,6 +181,32 @@ Copy [config.example.json](config.example.json) to:
 Policies support either excluding listed sources or including only listed
 sources.
 
+### Summary model
+
+`summaryModel` pins the model the summarizer asks Codex to use:
+
+```json
+{
+  "summaryModel": "gpt-5.6-luna"
+}
+```
+
+Leaving the key out, `null`, or blank leaves the choice to Codex, which resolves
+the account's default model from its model catalog — a value that changes over
+time and is unrelated to the memory-generation defaults. Codex's own
+`~/.codex/config.toml` cannot set the model here, because summaries run with
+`--ignore-user-config`; `summaryModel` is the only control this repo exposes.
+
+Two caveats:
+
+- The value must be a model slug your account can actually use. Codex accepts
+  unknown names **without an error** and falls back to guessed metadata, so a
+  typo degrades quietly. Verify with the `model:` line `codex exec` prints to
+  stderr, or by copying a slug from `~/.codex/models_cache.json`.
+- `config.json` is shared with the recorder. `summaryModel` and `captureText`
+  are outside the recovered settings surface, so `computer_history_update_settings`
+  preserves them rather than replacing the whole file.
+
 ## MCP
 
 Start the local MCP server:
@@ -219,6 +245,9 @@ npx mcp-use client history tools call get-recent-computer-history \
 `summarize-computer-history` starts a temporary, read-only Codex session over
 explicit event files. The raw event files are processed by the configured Codex
 provider when this tool is invoked.
+
+The model is Codex's account default unless `summaryModel` is set in
+`config.json` (see [Configure](#configure)).
 
 Generated Markdown memories remain local under `memories/resources/`.
 

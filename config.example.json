@@ -15,5 +15,6 @@
     ]
   },
   "showMenuBarIcon": true,
-  "captureText": true
+  "captureText": true,
+  "summaryModel": null
 }
