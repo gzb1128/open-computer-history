@@ -73,7 +73,7 @@ final class HistoryRecorder {
     func start() throws {
         SegmentStore.prune(homeURL: store.homeURL, olderThan: 48 * 60 * 60)
         observeWorkspace()
-        installEventTap()
+        try installEventTap()
 
         if let app = NSWorkspace.shared.frontmostApplication {
             currentProcessIdentifier = app.processIdentifier
@@ -113,8 +113,10 @@ final class HistoryRecorder {
         windowRetryTask?.cancel()
         windowRetryTask = nil
         try? append(kind: .sessionEnded, snapshot: currentSnapshot())
-        try? store.finish(reason: reason)
-        try? writeRuntimeStatus(state: .stopped, endedAt: Date())
+        do { try store.finish(reason: reason) }
+        catch { reportLifecycleError("finish segment", error) }
+        do { try writeRuntimeStatus(state: .stopped, endedAt: Date()) }
+        catch { reportLifecycleError("write stopped status", error) }
 
         if let workspaceObserver {
             NSWorkspace.shared.notificationCenter.removeObserver(workspaceObserver)
@@ -263,7 +265,7 @@ final class HistoryRecorder {
         )
     }
 
-    private func installEventTap() {
+    private func installEventTap() throws {
         let eventTypes: [CGEventType] = [
             .leftMouseDown, .leftMouseUp,
             .rightMouseDown, .rightMouseUp,
@@ -283,7 +285,12 @@ final class HistoryRecorder {
             userInfo: Unmanaged.passUnretained(self).toOpaque()
         )
         guard let eventTap else {
-            return
+            throw NSError(
+                domain: "OpenHistoryRecorder",
+                code: 1,
+                userInfo: [NSLocalizedDescriptionKey:
+                    "Input Monitoring event tap could not be created for this collector process."]
+            )
         }
         eventTapSource = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, eventTap, 0)
         if let eventTapSource {
@@ -556,7 +563,7 @@ final class HistoryRecorder {
         windowRetryTask?.cancel()
         windowRetryTask = nil
         windowRetryCount = 0
-        let signature = [
+        let signatureParts: [String] = [
             snapshot.app.bundleIdentifier ?? "",
             snapshot.window?.title ?? "",
             snapshot.window?.url ?? "",
@@ -564,7 +571,8 @@ final class HistoryRecorder {
             snapshot.element?.role ?? "",
             snapshot.element?.title ?? "",
             snapshot.element?.identifier ?? "",
-        ].joined(separator: "\u{1F}")
+        ]
+        let signature = signatureParts.joined(separator: "\u{1F}")
         guard signature != lastWindowSignature else {
             return
         }
@@ -692,7 +700,8 @@ final class HistoryRecorder {
            resumeAt <= Date()
         {
             requested = .running
-            try? runtimeControl.writeControl(.running)
+            do { try runtimeControl.writeControl(.running) }
+            catch { reportLifecycleError("clear timed pause", error) }
         } else {
             requested = control.state
         }
@@ -701,15 +710,21 @@ final class HistoryRecorder {
             flushTextBuffer()
             flushTerminalBuffer()
             recorderState = .paused
-            try? writeRuntimeStatus(state: .paused)
+            do { try writeRuntimeStatus(state: .paused) }
+            catch { reportLifecycleError("write paused status", error) }
         case (.paused, .running):
             recorderState = .running
             lastWindowSignature = nil
-            try? writeRuntimeStatus(state: .running)
+            do { try writeRuntimeStatus(state: .running) }
+            catch { reportLifecycleError("write running status", error) }
             appendWindowChangedIfNeeded(currentSnapshot())
         default:
             break
         }
+    }
+
+    private func reportLifecycleError(_ operation: String, _ error: Error) {
+        fputs("Collector could not \(operation): \(error)\n", stderr)
     }
 
     private func writeRuntimeStatus(
@@ -727,7 +742,10 @@ final class HistoryRecorder {
                     ? nil
                     : store.suppressedEventsURL?.path,
                 startedAt: recorderStartedAt,
-                endedAt: endedAt
+                endedAt: endedAt,
+                accessibility: AXIsProcessTrusted(),
+                inputMonitoring: CGPreflightListenEventAccess(),
+                permissionCheckedAt: Date()
             )
         )
     }

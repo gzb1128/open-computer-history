@@ -3,11 +3,10 @@ set -euo pipefail
 
 root=${0:A:h:h}
 configuration=${1:-release}
-build_dir="$root/collector/.build/$configuration"
+build_dir=$("$root/scripts/build-collector-local.sh" "$configuration")
 app="$root/dist/Open Computer History.app"
 fixture_app="$root/dist/Open History Fixture.app"
 
-swift build --package-path "$root/collector" -c "$configuration"
 rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 

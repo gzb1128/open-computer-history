@@ -2,6 +2,8 @@ import { readdir, readFile, rm } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { clearHistoryRequest, memoryDirectory } from "./history-store.js";
 import { recorderStatus } from "./runtime-control.js";
+import { getTimeZone } from "./settings.js";
+import { formatLocalISO, summaryTimeZone } from "./time.js";
 
 export interface TimelineEntry {
   id: string;
@@ -10,6 +12,9 @@ export interface TimelineEntry {
   applications: string[];
   start: string;
   end: string;
+  localStart: string;
+  localEnd: string;
+  summaryTimeZone: string | null;
   level: "10min" | "6h";
   suggestion?: {
     type: "skill" | "automation";
@@ -19,6 +24,7 @@ export interface TimelineEntry {
 }
 
 export async function loadTimeline(days: number) {
+  const timeZone = await getTimeZone();
   const directory = memoryDirectory();
   let filenames: string[] = [];
   try {
@@ -40,6 +46,9 @@ export async function loadTimeline(days: number) {
       applications: parseApplications(frontmatter(markdown, "applications")),
       start: interval.start.toISOString(),
       end: interval.end.toISOString(),
+      localStart: formatLocalISO(interval.start, timeZone),
+      localEnd: formatLocalISO(interval.end, timeZone),
+      summaryTimeZone: summaryTimeZone(markdown),
       level: interval.level,
       ...(parseSuggestion(markdown)
         ? { suggestion: parseSuggestion(markdown)! }
@@ -48,6 +57,7 @@ export async function loadTimeline(days: number) {
   }
   entries.sort((a, b) => b.start.localeCompare(a.start));
   return {
+    timeZone,
     status: await recorderStatus(),
     entryCount: entries.length,
     entries,

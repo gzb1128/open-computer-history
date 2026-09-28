@@ -89,6 +89,26 @@ test("summarizer writes a validated memory through the configured Codex binary",
   assert.match(await readFile(result.memoryPath, "utf8"), /Planning notes/u);
 });
 
+test("summarizer gives Codex local and UTC context and stamps output deterministically", async () => {
+  const { home, start, end } = await eventFixture();
+  await writeFile(join(home, "config.json"), '{"timeZone":"Asia/Shanghai"}\n');
+  const argsPath = join(home, "args-time.txt");
+  const fake = join(home, "fake-codex-time.sh");
+  await writeFile(fake, fakeCodexScript(argsPath));
+  await chmod(fake, 0o755);
+  process.env.OPEN_HISTORY_CODEX_BIN = fake;
+
+  const result = await summarizeInterval({ start, end, level: "10min" });
+  const argv = await readFile(argsPath, "utf8");
+  assert.match(argv, /Asia\/Shanghai/u);
+  assert.match(argv, /Local window:/u);
+  assert.match(argv, /UTC window.*source filtering/u);
+  assert.match(argv, /event.*Z.*UTC/u);
+  const markdown = await readFile(result.memoryPath, "utf8");
+  assert.match(markdown, /^---\ntimeZone: Asia\/Shanghai\n/mu);
+  assert.match(result.memoryPath, /Z-[A-Za-z0-9]+-10min-activity\.md$/u);
+});
+
 test("summarizer passes the configured model to the Codex binary", async () => {
   const { home, start, end } = await eventFixture();
   await writeFile(
@@ -107,6 +127,28 @@ test("summarizer passes the configured model to the Codex binary", async () => {
   const index = argv.indexOf("-m");
   assert.notEqual(index, -1);
   assert.equal(argv[index + 1], "gpt-5.6-luna");
+});
+
+test("six-hour prompt distinguishes zoned child prose from legacy unknown prose", async () => {
+  const { home, start, end } = await eventFixture();
+  await writeFile(join(home, "config.json"), '{"timeZone":"Asia/Shanghai"}\n');
+  const memories = join(home, "memories", "resources");
+  await mkdir(memories, { recursive: true });
+  const prefix = start.toISOString().replace(/:/gu, "-").replace(/\.\d{3}Z$/u, "Z");
+  await writeFile(join(memories, `${prefix}-old1-10min-activity.md`), memoryMarkdown.join("\n"));
+  const argsPath = join(home, "args-six-hour.txt");
+  const fake = join(home, "fake-codex-six-hour.sh");
+  await writeFile(fake, fakeCodexScript(argsPath));
+  await chmod(fake, 0o755);
+  process.env.OPEN_HISTORY_CODEX_BIN = fake;
+
+  const result = await summarizeInterval({ start, end, level: "6h" });
+  const argv = await readFile(argsPath, "utf8");
+  assert.match(argv, /child's frontmatter timeZone/u);
+  assert.match(argv, /without a declared time zone.*do not infer a precise local hour/u);
+  assert.match(argv, /explicit numeric offset.*do not apply the zone offset twice/u);
+  assert.match(await readFile(result.memoryPath, "utf8"), /^timeZone: Asia\/Shanghai$/mu);
+  assert.match(result.memoryPath, /Z-[A-Za-z0-9]+-6h-activity\.md$/u);
 });
 
 test("summarizer omits -m when no model is configured", async () => {

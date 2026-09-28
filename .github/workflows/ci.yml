@@ -36,5 +36,29 @@ jobs:
       - name: Build MCP server
         run: npm run build
 
+      - name: Verify MCP restart behavior
+        run: npm run test:mcp-restart
+
       - name: Run Swift tests
         run: swift test --package-path collector
+
+      - name: Package local bundle
+        run: |
+          scripts/build-local-bundle.sh
+          test -x "dist/Open Computer History Bundle/Open Computer History.app/Contents/MacOS/open-history"
+          test -f "dist/Open Computer History Bundle/runtime/.mcp-use/build/index.js"
+          scripts/install-local.sh --plan --from-bundle "dist/Open Computer History Bundle" > /dev/null
+          node scripts/smoke-local-bundle.mjs "dist/Open Computer History Bundle"
+
+      - name: Verify native and MCP contract
+        run: |
+          OPEN_HISTORY_NATIVE_BIN="$PWD/dist/Open Computer History Bundle/Open Computer History.app/Contents/MacOS/open-history" npm run test:contract
+
+      - name: Archive unsigned local bundle
+        run: tar -czf open-computer-history-local-bundle.tar.gz -C dist "Open Computer History Bundle"
+
+      - name: Upload local bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: open-computer-history-local-bundle
+          path: open-computer-history-local-bundle.tar.gz

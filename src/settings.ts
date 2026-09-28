@@ -78,6 +78,24 @@ export async function getSummaryModel(): Promise<string | undefined> {
   return trimmed === "" ? undefined : trimmed;
 }
 
+/** Display and summary zone; `null` or blank uses this process's local zone. */
+export async function getTimeZone(): Promise<string> {
+  const configured = (await readComputerHistoryConfig())["timeZone"];
+  if (configured === undefined || configured === null || configured === "") {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone;
+  }
+  if (typeof configured !== "string") {
+    throw new Error("config.json timeZone must be an IANA time zone string");
+  }
+  const trimmed = configured.trim();
+  if (!trimmed) return Intl.DateTimeFormat().resolvedOptions().timeZone;
+  try {
+    return new Intl.DateTimeFormat("en-US", { timeZone: trimmed }).resolvedOptions().timeZone;
+  } catch (error) {
+    throw new Error(`Invalid config.json timeZone: ${trimmed}`, { cause: error });
+  }
+}
+
 export async function getComputerHistorySettings(): Promise<ComputerHistorySettings> {
   const parsed = computerHistorySettingsSchema.safeParse(
     await readComputerHistoryConfig(),

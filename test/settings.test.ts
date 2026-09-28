@@ -6,6 +6,7 @@ import test from "node:test";
 import {
   getComputerHistorySettings,
   getSummaryModel,
+  getTimeZone,
   updateComputerHistorySettings,
 } from "../src/settings.ts";
 
@@ -24,6 +25,7 @@ test("settings update preserves entries outside the recovered schema", async () 
   await writeConfig(home, {
     captureText: false,
     summaryModel: "gpt-5.6-luna",
+    timeZone: "Asia/Shanghai",
   });
 
   await updateComputerHistorySettings({
@@ -43,6 +45,7 @@ test("settings update preserves entries outside the recovered schema", async () 
   ) as Record<string, unknown>;
   assert.equal(written["captureText"], false);
   assert.equal(written["summaryModel"], "gpt-5.6-luna");
+  assert.equal(written["timeZone"], "Asia/Shanghai");
   assert.equal(written["showMenuBarIcon"], true);
   assert.deepEqual(written["observation"], {
     defaultApplicationBehavior: "observe",
@@ -90,4 +93,20 @@ test("summary model reads trimmed values and treats blanks as unset", async () =
 
   await writeConfig(home, { summaryModel: 7 });
   assert.equal(await getSummaryModel(), undefined);
+});
+
+test("time zone uses the host default for omitted, null, or blank values and rejects invalid zones", async () => {
+  const home = await configHome();
+  const hostZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  assert.equal(await getTimeZone(), hostZone);
+  await writeConfig(home, { timeZone: null });
+  assert.equal(await getTimeZone(), hostZone);
+  await writeConfig(home, { timeZone: "   " });
+  assert.equal(await getTimeZone(), hostZone);
+  await writeConfig(home, { timeZone: "  Asia/Shanghai  " });
+  assert.equal(await getTimeZone(), "Asia/Shanghai");
+  await writeConfig(home, { timeZone: "Wrong/Zone" });
+  await assert.rejects(getTimeZone(), /timeZone.*Wrong\/Zone/u);
+  await writeConfig(home, { timeZone: 8 });
+  await assert.rejects(getTimeZone(), /timeZone/u);
 });

@@ -61,45 +61,38 @@ local MCP tools
 
 ## Package and install
 
-Build the ad-hoc signed menu-bar application:
+Build the local app and its standalone Node runtime, then inspect the install
+plan before enabling user LaunchAgents:
 
 ```bash
-npm run app:package
+npm ci
+scripts/build-local-bundle.sh
+scripts/install-local.sh --plan
+scripts/install-local.sh --from-bundle "dist/Open Computer History Bundle"
 ```
 
-The result is:
+The installed app is `~/.local/share/Open Computer History.app`; the Node
+runtime is `~/.local/share/open-computer-history/runtime`. Fresh installs load
+the menu, collector, and MCP services. Recording starts only after an explicit
+Start or Resume action unless `--start-collector` is specified. Native IPC
+(`--with-ipc`) and automatic summaries (`--with-summaries`) are optional.
+The installed MCP endpoint is `http://127.0.0.1:3317/mcp`.
 
-```text
-dist/Open Computer History.app
-```
-
-Opt in to local launch services for the menu, native IPC, summary pipeline, and
-MCP endpoint:
-
-```bash
-npm run install:local
-```
-
-This writes user LaunchAgents and is not run automatically. The installed MCP
-endpoint is `http://127.0.0.1:3317/mcp`.
-
-Remove services while preserving history data:
-
-```bash
-npm run uninstall:local
-```
+See [local installation](docs/installation.md) for prebuilt installs, service
+choices, upgrades, rollback, logs, permissions, and uninstall. The local app is
+ad-hoc signed; published distribution needs separate signing and notarization.
 
 ## Requirements
 
 - macOS 14 or newer
 - Swift 5.10 or newer
-- Node.js 22.22 or newer
+- Node.js 22.22.2 or newer
 - Codex CLI, only for AI-generated summaries
 
 ## Build
 
 ```bash
-npm install
+npm ci
 npm run collector:build
 npm run typecheck
 npm test
@@ -111,25 +104,33 @@ For a release collector:
 swift build --package-path collector -c release
 ```
 
+On a mixed Command Line Tools installation where SwiftPM reports stale module
+metadata, `scripts/package-macos-app.sh release` uses a scoped fresh-source
+build fallback. It does not replace `swift test`. The resulting app is in
+`dist/Open Computer History.app`.
+
 ## Permissions
 
 The recorder requires Accessibility and Input Monitoring. It does not require
 Screen Recording.
 
-```bash
-collector/.build/debug/open-history permissions
-```
-
-Enable the built `open-history` binary in:
+After installing, open the menu bar app and use **Request** or **Settings** for
+each permission. Grant access to the installed collector executable at
+`~/.local/share/Open Computer History.app/Contents/MacOS/open-history` in:
 
 - System Settings > Privacy & Security > Accessibility
 - System Settings > Privacy & Security > Input Monitoring
 
-Verify:
+Then start the collector from the menu and check its reported state and
+permissions:
 
 ```bash
-collector/.build/debug/open-history status
+"$HOME/.local/share/Open Computer History.app/Contents/MacOS/open-history" status
 ```
+
+For source-only development, `collector/.build/debug/open-history permissions`
+requests access for that development binary. A terminal permission result does
+not establish that the installed background collector has access.
 
 ## Record
 
@@ -145,8 +146,10 @@ Record for a bounded smoke test:
 collector/.build/debug/open-history record --duration 30
 ```
 
-To opt out of ordinary text persistence, set `"captureText": false` in
-`config.json`. Secure fields and private browsing are always suppressed.
+To omit typed, selected, and terminal text fields, set `"captureText": false`
+in `config.json`; the change applies on the next collector start. Accessibility
+tree and element values may still be recorded. Secure fields and private
+browsing are always suppressed.
 
 The CLI can explicitly force text capture:
 
@@ -207,6 +210,22 @@ Two caveats:
   are outside the recovered settings surface, so `computer_history_update_settings`
   preserves them rather than replacing the whole file.
 
+### Time zone
+
+Set `"timeZone": "Asia/Shanghai"` in `config.json` to use a specific IANA
+time zone for new summaries and MCP display fields. Omit the key, set it to
+`null`, or leave it blank to use the host's current time zone. An invalid
+explicit zone reports an error. `computer_history_update_settings` preserves
+this key with other config entries outside the recovered settings schema.
+
+Events, timeline `start`/`end`, summary filenames, and pipeline bucket
+boundaries remain UTC. `localTimestamp` and `localStart`/`localEnd` show the
+same instants with numeric offsets; the response `timeZone` names the zone
+used to render them. New Markdown summaries declare `timeZone` in their
+frontmatter. Older summaries have no known prose time zone and are not
+rewritten or summarized again; their `summaryTimeZone` is `null` in timeline
+and search results, even when their surrounding event times display locally.
+
 ## MCP
 
 Start the local MCP server:
@@ -215,7 +234,9 @@ Start the local MCP server:
 npm run dev
 ```
 
-The endpoint is `http://localhost:3000/mcp`. Available tools:
+The development endpoint is `http://127.0.0.1:3000/mcp`; the installed service
+uses `http://127.0.0.1:3317/mcp`. Set `OPEN_HISTORY_MCP_PORT=3000` when running
+the doctor against the development server. Available tools:
 
 - `computer_history_pause`
 - `computer_history_resume`
@@ -233,12 +254,41 @@ The endpoint is `http://localhost:3000/mcp`. Available tools:
 Example terminal validation:
 
 ```bash
-npx mcp-use client connect history http://localhost:3000/mcp
+npx mcp-use client connect history http://127.0.0.1:3000/mcp
 npx mcp-use client history tools list
 npx mcp-use client history tools call computer-history-status
 npx mcp-use client history tools call get-recent-computer-history \
   '{"hours":1,"limit":20,"includeText":false}'
 ```
+
+`computer_history_status` reports recorder state; `computer-history-status`
+reports store counts. Both historical names remain available. Some clients
+normalize hyphens and underscores to the same name, so inspect that client's
+tool list and call the intended exact tool name.
+
+## Diagnostics
+
+Run the read-only doctor from a source checkout:
+
+```bash
+npm run doctor
+npm run doctor -- --json
+```
+
+After a local install, run
+`node ~/.local/share/open-computer-history/runtime/bin/doctor.mjs` (add `--json`
+for machine-readable output). The installed command does not require a source
+checkout.
+
+It checks the installed app and runtime, LaunchAgent configuration and load
+state, live collector versus stale runtime status, permissions reported by the
+collector process, recent collector stderr evidence, MCP initialize and a read-only
+status call, event-segment write time, and optional summary pipeline state.
+It does not read event contents or memory text. A reachable MCP endpoint does
+not prove that an AI client injected its tools; the doctor prints a client MCP
+configuration and marks client injection unknown for you to check in that
+client. An idle or paused recorder can have old segment write times without
+being broken.
 
 ## Summaries
 

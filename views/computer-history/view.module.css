@@ -94,6 +94,11 @@ button {
   text-wrap: pretty;
 }
 
+.timeNote {
+  color: var(--muted);
+  font-size: 12px;
+}
+
 .primaryAction,
 .empty button {
   min-height: 40px;

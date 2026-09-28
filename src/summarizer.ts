@@ -17,7 +17,8 @@ import {
   memoryDirectory,
   memoryFilesForInterval,
 } from "./history-store.js";
-import { getSummaryModel } from "./settings.js";
+import { getSummaryModel, getTimeZone } from "./settings.js";
+import { formatLocalISO, stampSummaryTimeZone } from "./time.js";
 
 export async function summarizeRecentHistory({ minutes }: { minutes: number }) {
   const end = new Date();
@@ -48,13 +49,15 @@ export async function summarizeInterval({
     );
   }
 
+  const timeZone = await getTimeZone();
   const outputPath = join(tmpdir(), `open-history-${randomUUID()}.md`);
-  const prompt = buildPrompt({ start, end, level, files, now: new Date() });
+  const prompt = buildPrompt({ start, end, level, files, now: new Date(), timeZone });
   await runCodex(prompt, outputPath);
 
-  const markdown = (await readFile(outputPath, "utf8")).trim();
+  const generated = (await readFile(outputPath, "utf8")).trim();
   await rm(outputPath, { force: true });
-  validateMemory(markdown);
+  validateMemory(generated);
+  const markdown = stampSummaryTimeZone(generated, timeZone);
 
   const filename = `${fileTimestamp(start)}-${randomUUID().slice(0, 4)}-${level}-activity.md`;
   const memoryPath = join(memoryDirectory(), filename);
@@ -73,12 +76,14 @@ function buildPrompt({
   level,
   files,
   now,
+  timeZone,
 }: {
   start: Date;
   end: Date;
   level: "10min" | "6h";
   files: string[];
   now: Date;
+  timeZone: string;
 }): string {
   const sourceDescription =
     level === "10min"
@@ -95,8 +100,11 @@ Read only these ${sourceDescription}:
 ${files.map((file) => `- ${file}`).join("\n")}
 
 Summary level: ${level}
-Window: ${start.toISOString()} to ${end.toISOString()}
-Current summarization time: ${now.toISOString()}
+Time zone for all title, description, and chronology times: ${timeZone}.
+Local window: ${formatLocalISO(start, timeZone)} to ${formatLocalISO(end, timeZone)} (${timeZone}).
+Current local summarization time: ${formatLocalISO(now, timeZone)} (${timeZone}).
+UTC window (source filtering): ${start.toISOString()} to ${end.toISOString()}.
+Source event timestamps ending in Z are UTC; convert them to ${timeZone} before writing times. Child summary times with an explicit numeric offset already represent an instant: do not apply the zone offset twice. For child prose times without an offset, use that child's frontmatter timeZone to interpret them before converting to ${timeZone}. Older child summaries without a declared time zone have unknown prose-time provenance; do not infer a precise local hour from them.
 ${level === "6h" ? "Focus on the larger arcs, pivots, outcomes, blockers, and repeated workflows across the full window." : ""}
 
 Return only Markdown with this exact shape:

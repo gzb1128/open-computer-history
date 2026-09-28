@@ -7,6 +7,7 @@ import {
   type ViewConfig,
 } from "mcp-use/react";
 import styles from "./view.module.css";
+import { formatTime, groupEntries } from "./time.js";
 
 export const viewConfig = {
   autoResize: true,
@@ -31,15 +32,17 @@ function Timeline({
     };
     entryCount: number;
     entries: TimelineEntry[];
+    timeZone?: string;
   };
 }) {
   const [entries, setEntries] = useState(data.entries);
   const [confirmID, setConfirmID] = useState<string | null>(null);
   const deleteTool = useCallTool("delete-computer-history-item");
   const sendFollowUp = useSendFollowUp();
+  const timeZone = data.timeZone ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
 
   useEffect(() => setEntries(data.entries), [data.entries]);
-  const groups = useMemo(() => groupEntries(entries), [entries]);
+  const groups = useMemo(() => groupEntries(entries, timeZone), [entries, timeZone]);
 
   async function remove(id: string) {
     if (confirmID !== id) {
@@ -85,6 +88,7 @@ function Timeline({
         <div className={styles.summaryStrip}>
           <span>{statusLabel(data.status.state)}</span>
           <span className={styles.count}>{entries.length} summaries</span>
+          <span className={styles.count}>Times: {timeZone}</span>
         </div>
 
         {entries.length === 0 ? (
@@ -98,7 +102,7 @@ function Timeline({
                   {items.map((entry) => (
                     <article className={styles.entry} key={entry.id}>
                       <time dateTime={entry.start}>
-                        {formatTime(entry.start)}
+                        {formatTime(entry.start, timeZone)}
                       </time>
                       <div className={styles.rail} aria-hidden="true">
                         <span />
@@ -108,6 +112,12 @@ function Timeline({
                           <div>
                             <h3>{entry.title}</h3>
                             <p>{entry.description}</p>
+                            {entry.summaryTimeZone == null && (
+                              <p className={styles.timeNote}>Older summary: times in its text may use an unknown time zone.</p>
+                            )}
+                            {entry.summaryTimeZone != null && entry.summaryTimeZone !== timeZone && (
+                              <p className={styles.timeNote}>Summary text: {entry.summaryTimeZone}</p>
+                            )}
                           </div>
                           <button
                             type="button"
@@ -161,6 +171,9 @@ interface TimelineEntry {
   applications: string[];
   start: string;
   end: string;
+  localStart?: string;
+  localEnd?: string;
+  summaryTimeZone?: string | null;
   level: "10min" | "6h";
   suggestion?: {
     type: "skill" | "automation";
@@ -226,36 +239,6 @@ function TimelineSkeleton() {
       <span />
     </div>
   );
-}
-
-function groupEntries(entries: TimelineEntry[]) {
-  const groups = new Map<string, TimelineEntry[]>();
-  for (const entry of entries) {
-    const label = formatDay(entry.start);
-    groups.set(label, [...(groups.get(label) ?? []), entry]);
-  }
-  return [...groups.entries()];
-}
-
-function formatDay(value: string) {
-  const date = new Date(value);
-  const today = new Date();
-  if (date.toDateString() === today.toDateString()) return "Today";
-  const yesterday = new Date(today);
-  yesterday.setDate(today.getDate() - 1);
-  if (date.toDateString() === yesterday.toDateString()) return "Yesterday";
-  return new Intl.DateTimeFormat(undefined, {
-    weekday: "long",
-    month: "short",
-    day: "numeric",
-  }).format(date);
-}
-
-function formatTime(value: string) {
-  return new Intl.DateTimeFormat(undefined, {
-    hour: "numeric",
-    minute: "2-digit",
-  }).format(new Date(value));
 }
 
 function statusLabel(state: "stopped" | "running" | "paused") {

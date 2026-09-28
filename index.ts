@@ -1,5 +1,6 @@
 import { MCPServer } from "mcp-use";
 import { z } from "zod";
+import packageManifest from "./package.json" with { type: "json" };
 import {
   clearHistory,
   getHistoryStatus,
@@ -10,6 +11,7 @@ import { summarizeRecentHistory } from "./src/summarizer.js";
 import {
   computerHistorySettingsSchema,
   getComputerHistorySettings,
+  getTimeZone,
   updateComputerHistorySettings,
 } from "./src/settings.js";
 import {
@@ -21,16 +23,22 @@ import {
   deleteTimelineItem,
   loadTimeline,
 } from "./src/timeline.js";
+import { withLocalTimestamp } from "./src/time.js";
 
 const server = new MCPServer({
   name: "open-codex-computer-history",
   title: "Open Codex Computer History",
-  version: "0.1.0",
+  version: packageManifest.version,
+  // mcp-use 2.0.4's request logger can lock the response body before Hono rewraps it, causing HTTP 500.
+  logging: { enabled: false },
   description:
     "Query and summarize a local macOS interaction-event stream without screenshots.",
 });
 
-const eventSchema = z.record(z.string(), z.unknown());
+const eventSchema = z.object({
+  timestamp: z.unknown().optional().describe("Original event timestamp, normally a UTC string; preserved as stored"),
+  localTimestamp: z.string().optional().describe("Same instant in the response timeZone with a numeric offset; omitted for invalid or missing timestamps"),
+}).catchall(z.unknown());
 const runtimeStatusSchema = z.object({
   state: z.enum(["stopped", "running", "paused"]),
   processIdentifier: z.number().optional(),
@@ -40,6 +48,9 @@ const runtimeStatusSchema = z.object({
   suppressedEventsPath: z.string().optional(),
   startedAt: z.string().optional(),
   endedAt: z.string().optional(),
+  accessibility: z.boolean().optional(),
+  inputMonitoring: z.boolean().optional(),
+  permissionCheckedAt: z.string().optional(),
 });
 const timelineEntrySchema = z.object({
   id: z.string(),
@@ -48,6 +59,9 @@ const timelineEntrySchema = z.object({
   applications: z.array(z.string()),
   start: z.string(),
   end: z.string(),
+  localStart: z.string().describe("Start instant in the response timeZone with numeric offset"),
+  localEnd: z.string().describe("End instant in the response timeZone with numeric offset"),
+  summaryTimeZone: z.string().nullable().describe("Zone declared by the source Markdown summary; null means its prose times are unknown"),
   level: z.enum(["10min", "6h"]),
   suggestion: z
     .object({
@@ -63,7 +77,7 @@ export const showComputerHistory = server.tool(
     name: "show-computer-history",
     title: "Computer History",
     description:
-      "Show the local Computer History timeline, recording status, contributing apps, and workflow suggestions.",
+      "Show the local Computer History timeline, recording status, contributing apps, and workflow suggestions. UTC start/end remain authoritative instants; localStart/localEnd use timeZone. Old summary prose may have unknown time-zone provenance.",
     inputSchema: z.object({
       days: z
         .number()
@@ -74,6 +88,7 @@ export const showComputerHistory = server.tool(
         .describe("Number of recent days to show"),
     }),
     outputSchema: z.object({
+      timeZone: z.string(),
       status: runtimeStatusSchema,
       entryCount: z.number(),
       entries: z.array(timelineEntrySchema),
@@ -152,7 +167,7 @@ export const originalComputerHistoryPause = server.tool(
 export const originalComputerHistoryResume = server.tool(
   {
     name: "computer_history_resume",
-    description: "Resume a paused Computer History recorder.",
+    description: "Resume a paused recorder or start a stopped Computer History recorder.",
     inputSchema: z.object({}),
     outputSchema: runtimeStatusSchema,
     annotations: {
@@ -270,7 +285,7 @@ export const getRecentComputerHistory = server.tool(
   {
     name: "get-recent-computer-history",
     description:
-      "Read recent local interaction events, filtered by time, event type, or application. Text and accessibility-tree content are redacted unless explicitly requested.",
+      "Read recent local interaction events, filtered by time, event type, or application. Original timestamps are preserved; localTimestamp uses the response timeZone. Text and accessibility-tree content are redacted unless explicitly requested.",
     inputSchema: z.object({
       hours: z.number().positive().max(48).default(2).describe("Lookback window in hours"),
       limit: z.number().int().positive().max(500).default(100).describe("Maximum events"),
@@ -288,6 +303,7 @@ export const getRecentComputerHistory = server.tool(
         .describe("Include captured text and AX tree fields"),
     }),
     outputSchema: z.object({
+      timeZone: z.string(),
       count: z.number(),
       events: z.array(eventSchema),
     }),
@@ -299,8 +315,9 @@ export const getRecentComputerHistory = server.tool(
   },
   async (input) => {
     try {
+      const timeZone = await getTimeZone();
       const events = await readRecentEvents(input);
-      return resultEnvelope({ count: events.length, events });
+      return resultEnvelope({ timeZone, count: events.length, events: events.map((event) => withLocalTimestamp(event, timeZone)) });
     } catch (error) {
       return errorEnvelope(error);
     }
@@ -311,7 +328,7 @@ export const searchComputerHistory = server.tool(
   {
     name: "search-computer-history",
     description:
-      "Search local Computer History events and generated Markdown memories for an app, task, window, file, or keyword.",
+      "Search local Computer History events and generated Markdown memories for an app, task, window, file, or keyword. Event localTimestamp uses the response timeZone; memoryMatches.summaryTimeZone records the source prose zone, or null when unknown.",
     inputSchema: z.object({
       query: z.string().min(2).max(200).describe("Case-insensitive search query"),
       hours: z.number().positive().max(48).default(24).describe("Event lookback window"),
@@ -322,12 +339,14 @@ export const searchComputerHistory = server.tool(
         .describe("Include captured text and AX tree fields in event matches"),
     }),
     outputSchema: z.object({
+      timeZone: z.string(),
       eventMatches: z.array(eventSchema),
       memoryMatches: z.array(
         z.object({
           path: z.string(),
           title: z.string(),
           excerpt: z.string(),
+          summaryTimeZone: z.string().nullable(),
         }),
       ),
     }),
@@ -339,7 +358,13 @@ export const searchComputerHistory = server.tool(
   },
   async (input) => {
     try {
-      return resultEnvelope(await searchHistory(input));
+      const timeZone = await getTimeZone();
+      const result = await searchHistory(input);
+      return resultEnvelope({
+        timeZone,
+        ...result,
+        eventMatches: result.eventMatches.map((event) => withLocalTimestamp(event, timeZone)),
+      });
     } catch (error) {
       return errorEnvelope(error);
     }

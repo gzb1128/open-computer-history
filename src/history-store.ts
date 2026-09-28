@@ -1,6 +1,7 @@
 import { readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
+import { summaryTimeZone } from "./time.js";
 
 export type HistoryEvent = Record<string, unknown> & {
   timestamp?: string;
@@ -112,6 +113,7 @@ export async function searchHistory(options: {
       path,
       title: frontmatterValue(markdown, "title") ?? firstHeading(markdown),
       excerpt: excerptAround(markdown, index, query.length),
+      summaryTimeZone: summaryTimeZone(markdown),
     });
     if (memoryMatches.length >= options.limit) break;
   }

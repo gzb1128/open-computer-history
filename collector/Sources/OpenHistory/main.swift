@@ -15,13 +15,17 @@ case "record":
 case "sample":
     writeSample(homeURL: homeURL)
 case "permissions":
-    printPermissions(request: !arguments.contains("--no-prompt"))
+    printPermissions(arguments: Array(arguments.dropFirst()))
 case "status":
     printStatus(homeURL: homeURL)
 case "pause":
-    writePauseControl(arguments: Array(arguments.dropFirst()), homeURL: homeURL)
-case "resume":
-    writeControlState(.running, homeURL: homeURL)
+    changeRecorderState(.paused, arguments: Array(arguments.dropFirst()), homeURL: homeURL)
+case "resume", "start":
+    changeRecorderState(.running, arguments: [], homeURL: homeURL)
+case "stop":
+    changeRecorderState(.stopped, arguments: [], homeURL: homeURL)
+case "contract-probe":
+    probeControl(arguments: Array(arguments.dropFirst()), homeURL: homeURL)
 default:
     printUsage()
 }
@@ -37,6 +41,14 @@ func historyHome() -> URL {
 }
 
 func runRecorder(arguments: [String], homeURL: URL) {
+    let instanceLock: RecorderInstanceLock
+    do {
+        instanceLock = try RecorderInstanceLock(homeURL: homeURL)
+    } catch {
+        fputs("Collector cannot start: \(error.localizedDescription)\n", stderr)
+        exit(1)
+    }
+    defer { withExtendedLifetime(instanceLock) {} }
     let requestPermissions = !arguments.contains("--no-prompt")
     if requestPermissions {
         let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
@@ -44,10 +56,31 @@ func runRecorder(arguments: [String], homeURL: URL) {
         _ = CGRequestListenEventAccess()
     }
 
-    guard AXIsProcessTrusted(), CGPreflightListenEventAccess() else {
+    let accessibility = AXIsProcessTrusted()
+    let inputMonitoring = CGPreflightListenEventAccess()
+    guard accessibility, inputMonitoring else {
+        do {
+            try RuntimeControlStore(homeURL: homeURL).writeRuntime(
+                RecorderRuntimeStatus(
+                    state: .stopped,
+                    processIdentifier: nil,
+                    eventStreamRootPath: homeURL.path,
+                    currentSegmentEventsPath: nil,
+                    currentSegmentMetadataPath: nil,
+                    suppressedEventsPath: nil,
+                    startedAt: nil,
+                    endedAt: Date(),
+                    accessibility: accessibility,
+                    inputMonitoring: inputMonitoring,
+                    permissionCheckedAt: Date()
+                )
+            )
+        } catch {
+            fputs("Failed to report collector permissions: \(error)\n", stderr)
+        }
         fputs(
-            "Accessibility and Input Monitoring permissions are required. " +
-                "Run `open-history permissions`, then enable the built binary in System Settings.\n",
+            "Collector permissions denied: Accessibility=\(accessibility), Input Monitoring=\(inputMonitoring). " +
+                "Grant the installed open-history executable in System Settings, then start again.\n",
             stderr
         )
         exit(2)
@@ -166,15 +199,22 @@ func writeSample(homeURL: URL) {
     }
 }
 
-func printPermissions(request: Bool) {
-    if request {
+func printPermissions(arguments: [String]) {
+    let requestAX = arguments.contains("--request-accessibility") ||
+        (!arguments.contains("--no-prompt") && !arguments.contains("--request-input-monitoring"))
+    let requestInput = arguments.contains("--request-input-monitoring") ||
+        (!arguments.contains("--no-prompt") && !arguments.contains("--request-accessibility"))
+    if requestAX {
         let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
         _ = AXIsProcessTrustedWithOptions(options)
+    }
+    if requestInput {
         _ = CGRequestListenEventAccess()
     }
-    let status = [
+    let status: [String: Any] = [
         "accessibility": AXIsProcessTrusted(),
         "inputMonitoring": CGPreflightListenEventAccess(),
+        "source": "thisInvocation",
     ]
     if let data = try? JSONSerialization.data(withJSONObject: status, options: [.prettyPrinted, .sortedKeys]),
        let output = String(data: data, encoding: .utf8)
@@ -190,15 +230,28 @@ func printStatus(homeURL: URL) {
         includingPropertiesForKeys: nil,
         options: [.skipsHiddenFiles]
     )) ?? []
-    let runtime = RuntimeControlStore(homeURL: homeURL).readRuntime()
+    let runtime = RuntimeControlStore(homeURL: homeURL).readLiveRuntime()
+    let permissions: [String: Any]
+    if runtime.state != .stopped,
+       let accessibility = runtime.accessibility,
+       let inputMonitoring = runtime.inputMonitoring,
+       let checkedAt = runtime.permissionCheckedAt {
+        permissions = [
+            "source": "collector",
+            "accessibility": accessibility,
+            "inputMonitoring": inputMonitoring,
+            "checkedAt": ISO8601DateFormatter().string(from: checkedAt),
+        ]
+    } else {
+        permissions = ["source": "unknown"]
+    }
     let status: [String: Any] = [
         "home": homeURL.path,
         "segments": segments.count,
-        "accessibility": AXIsProcessTrusted(),
-        "inputMonitoring": CGPreflightListenEventAccess(),
-        "state": runtime?.state.rawValue ?? RecorderState.stopped.rawValue,
-        "processIdentifier": runtime?.processIdentifier as Any,
-        "currentSegmentEventsPath": runtime?.currentSegmentEventsPath as Any,
+        "permissions": permissions,
+        "state": runtime.state.rawValue,
+        "processIdentifier": runtime.processIdentifier.map { $0 as Any } ?? NSNull(),
+        "currentSegmentEventsPath": runtime.currentSegmentEventsPath.map { $0 as Any } ?? NSNull(),
     ]
     if let data = try? JSONSerialization.data(withJSONObject: status, options: [.prettyPrinted, .sortedKeys]),
        let output = String(data: data, encoding: .utf8)
@@ -207,43 +260,86 @@ func printStatus(homeURL: URL) {
     }
 }
 
-func writeControlState(_ state: RecorderState, homeURL: URL) {
+func changeRecorderState(_ state: RecorderState, arguments: [String], homeURL: URL) {
     do {
-        try RuntimeControlStore(homeURL: homeURL).writeControl(state)
-        print(state.rawValue)
+        let lifecycle = RecorderLifecycle(
+            homeURL: homeURL,
+            collectorURL: URL(fileURLWithPath: CommandLine.arguments[0])
+        )
+        let result: RecorderRuntimeStatus
+        switch state {
+        case .running:
+            result = try lifecycle.resume()
+        case .paused:
+            result = try lifecycle.pause(resumeAt: pauseDate(arguments: arguments))
+        case .stopped:
+            result = try lifecycle.stop()
+        }
+        print(result.state.rawValue)
     } catch {
-        fputs("Failed to update recorder state: \(error)\n", stderr)
+        fputs("Failed to update recorder state: \(error.localizedDescription)\n", stderr)
         exit(1)
     }
 }
 
-func writePauseControl(arguments: [String], homeURL: URL) {
-    let resumeAt: Date?
+func pauseDate(arguments: [String]) -> Date? {
     switch optionValue("--for", in: arguments) {
     case "30m":
-        resumeAt = Date().addingTimeInterval(30 * 60)
+        return Date().addingTimeInterval(30 * 60)
     case "1h":
-        resumeAt = Date().addingTimeInterval(60 * 60)
+        return Date().addingTimeInterval(60 * 60)
     case "tomorrow":
-        resumeAt = Calendar.current.date(
+        return Calendar.current.date(
             byAdding: .day,
             value: 1,
             to: Calendar.current.startOfDay(for: Date())
         )
     case nil:
-        resumeAt = nil
+        return nil
     default:
         fputs("Pause duration must be 30m, 1h, or tomorrow.\n", stderr)
         exit(2)
     }
+}
+
+func probeControl(arguments: [String], homeURL: URL) {
+    if arguments.first == "--lock" {
+        guard arguments.count >= 2 else {
+            fputs("contract-probe --lock requires a home path.\n", stderr)
+            exit(2)
+        }
+        do {
+            let lock = try RecorderInstanceLock(homeURL: URL(fileURLWithPath: arguments[1]))
+            print("locked")
+            fflush(stdout)
+            if let seconds = optionValue("--hold", in: arguments).flatMap(Double.init), seconds > 0 {
+                Thread.sleep(forTimeInterval: seconds)
+            }
+            withExtendedLifetime(lock) {}
+        } catch {
+            fputs("Lock probe failed: \(error.localizedDescription)\n", stderr)
+            exit(1)
+        }
+        return
+    }
+    guard let path = arguments.first else {
+        fputs("contract-probe requires a control JSON path.\n", stderr)
+        exit(2)
+    }
     do {
-        try RuntimeControlStore(homeURL: homeURL).writeControl(
-            .paused,
-            resumeAt: resumeAt
-        )
-        print(RecorderState.paused.rawValue)
+        let request = try RuntimeControlStore(homeURL: homeURL)
+            .decodeControl(Data(contentsOf: URL(fileURLWithPath: path)))
+        var output = [
+            "state": request.state.rawValue,
+            "updatedAt": ISO8601DateFormatter().string(from: request.updatedAt),
+        ]
+        if let resumeAt = request.resumeAt {
+            output["resumeAt"] = ISO8601DateFormatter().string(from: resumeAt)
+        }
+        let data = try JSONSerialization.data(withJSONObject: output, options: [.sortedKeys])
+        print(String(decoding: data, as: UTF8.self))
     } catch {
-        fputs("Failed to pause recorder: \(error)\n", stderr)
+        fputs("Failed to decode control request: \(error)\n", stderr)
         exit(1)
     }
 }
@@ -262,8 +358,9 @@ func printUsage() {
     Usage:
       open-history record [--duration SECONDS] [--capture-text] [--no-prompt]
       open-history sample
-      open-history permissions [--no-prompt]
+      open-history permissions [--no-prompt|--request-accessibility|--request-input-monitoring]
       open-history status
+      open-history start|stop
       open-history pause [--for 30m|1h|tomorrow]
       open-history resume
 

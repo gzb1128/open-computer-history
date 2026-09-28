@@ -16,5 +16,6 @@
   },
   "showMenuBarIcon": true,
   "captureText": true,
-  "summaryModel": null
+  "summaryModel": null,
+  "timeZone": null
 }

@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 
 public enum RecorderState: String, Codable, Sendable {
     case stopped
@@ -15,6 +16,9 @@ public struct RecorderRuntimeStatus: Codable, Sendable {
     public let suppressedEventsPath: String?
     public let startedAt: Date?
     public let endedAt: Date?
+    public let accessibility: Bool?
+    public let inputMonitoring: Bool?
+    public let permissionCheckedAt: Date?
 
     public init(
         state: RecorderState,
@@ -24,7 +28,10 @@ public struct RecorderRuntimeStatus: Codable, Sendable {
         currentSegmentMetadataPath: String?,
         suppressedEventsPath: String?,
         startedAt: Date?,
-        endedAt: Date?
+        endedAt: Date?,
+        accessibility: Bool? = nil,
+        inputMonitoring: Bool? = nil,
+        permissionCheckedAt: Date? = nil
     ) {
         self.state = state
         self.processIdentifier = processIdentifier
@@ -34,6 +41,9 @@ public struct RecorderRuntimeStatus: Codable, Sendable {
         self.suppressedEventsPath = suppressedEventsPath
         self.startedAt = startedAt
         self.endedAt = endedAt
+        self.accessibility = accessibility
+        self.inputMonitoring = inputMonitoring
+        self.permissionCheckedAt = permissionCheckedAt
     }
 }
 
@@ -69,7 +79,19 @@ public final class RuntimeControlStore {
         self.encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         self.encoder.dateEncodingStrategy = .iso8601
         self.decoder = JSONDecoder()
-        self.decoder.dateDecodingStrategy = .iso8601
+        self.decoder.dateDecodingStrategy = .custom { decoder in
+            let container = try decoder.singleValueContainer()
+            let value = try container.decode(String.self)
+            let formatter = ISO8601DateFormatter()
+            formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            if let date = formatter.date(from: value) { return date }
+            formatter.formatOptions = [.withInternetDateTime]
+            if let date = formatter.date(from: value) { return date }
+            throw DecodingError.dataCorruptedError(
+                in: container,
+                debugDescription: "Invalid ISO8601 timestamp: \(value)"
+            )
+        }
     }
 
     public func writeRuntime(_ status: RecorderRuntimeStatus) throws {
@@ -87,6 +109,45 @@ public final class RuntimeControlStore {
         return try? decoder.decode(RecorderRuntimeStatus.self, from: data)
     }
 
+    public func readLiveRuntime(
+        isAlive: (Int32) -> Bool = RuntimeControlStore.isProcessAlive
+    ) -> RecorderRuntimeStatus {
+        guard let runtime = readRuntime(),
+              runtime.state != .stopped,
+              let pid = runtime.processIdentifier,
+              pid > 0,
+              isAlive(pid)
+        else {
+            return stoppedStatus()
+        }
+        return runtime
+    }
+
+    public func stoppedStatus() -> RecorderRuntimeStatus {
+        let previous = readRuntime()
+        return RecorderRuntimeStatus(
+            state: .stopped,
+            processIdentifier: nil,
+            eventStreamRootPath: homeURL.path,
+            currentSegmentEventsPath: nil,
+            currentSegmentMetadataPath: nil,
+            suppressedEventsPath: nil,
+            startedAt: previous?.startedAt,
+            endedAt: previous?.endedAt,
+            accessibility: previous?.accessibility,
+            inputMonitoring: previous?.inputMonitoring,
+            permissionCheckedAt: previous?.permissionCheckedAt
+        )
+    }
+
+    public static func isProcessAlive(_ pid: Int32) -> Bool {
+        guard pid > 0 else { return false }
+        guard kill(pid, 0) == 0 || errno == EPERM else { return false }
+        var path = [CChar](repeating: 0, count: 4096)
+        guard proc_pidpath(pid, &path, UInt32(path.count)) > 0 else { return false }
+        return URL(fileURLWithPath: String(cString: path)).lastPathComponent == "open-history"
+    }
+
     public func writeControl(_ state: RecorderState, resumeAt: Date? = nil) throws {
         try FileManager.default.createDirectory(
             at: homeURL,
@@ -101,5 +162,9 @@ public final class RuntimeControlStore {
             return nil
         }
         return try? decoder.decode(RecorderControlRequest.self, from: data)
+    }
+
+    public func decodeControl(_ data: Data) throws -> RecorderControlRequest {
+        try decoder.decode(RecorderControlRequest.self, from: data)
     }
 }
