@@ -760,6 +760,10 @@ final class HistoryRecorder {
         do {
             try store.finish(reason: "segment_rotated")
             store = try SegmentStore(homeURL: homeURL)
+            SegmentStore.prune(
+                homeURL: homeURL,
+                olderThan: 48 * 60 * 60
+            )
             try writeRuntimeStatus(state: .running)
         } catch {
             try? append(

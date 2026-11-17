@@ -2,6 +2,7 @@ import { MCPServer } from "mcp-use";
 import { z } from "zod";
 import packageManifest from "./package.json" with { type: "json" };
 import {
+  boundItemsToByteBudget,
   clearHistory,
   getHistoryStatus,
   readRecentEvents,
@@ -38,7 +39,10 @@ const server = new MCPServer({
 const eventSchema = z.object({
   timestamp: z.unknown().optional().describe("Original event timestamp, normally a UTC string; preserved as stored"),
   localTimestamp: z.string().optional().describe("Same instant in the response timeZone with a numeric offset; omitted for invalid or missing timestamps"),
+  truncated: z.literal(true).optional().describe("Present when captured payload content or event fields were reduced for this response"),
 }).catchall(z.unknown());
+const MAX_HISTORY_ITEMS_BYTES = 480 * 1024;
+const SEARCH_MEMORY_BUDGET_BYTES = 128 * 1024;
 const runtimeStatusSchema = z.object({
   state: z.enum(["stopped", "running", "paused"]),
   processIdentifier: z.number().optional(),
@@ -306,6 +310,7 @@ export const getRecentComputerHistory = server.tool(
       timeZone: z.string(),
       count: z.number(),
       events: z.array(eventSchema),
+      truncated: z.boolean().describe("True when event content was reduced or older returned matches were omitted to stay within the response budget"),
     }),
     annotations: {
       readOnlyHint: true,
@@ -317,7 +322,17 @@ export const getRecentComputerHistory = server.tool(
     try {
       const timeZone = await getTimeZone();
       const events = await readRecentEvents(input);
-      return resultEnvelope({ timeZone, count: events.length, events: events.map((event) => withLocalTimestamp(event, timeZone)) });
+      const localized = events.map((event) => withLocalTimestamp(event, timeZone));
+      const bounded = boundItemsToByteBudget(
+        localized,
+        MAX_HISTORY_ITEMS_BYTES,
+      );
+      return resultEnvelope({
+        timeZone,
+        count: bounded.items.length,
+        events: bounded.items,
+        truncated: bounded.truncated || localized.some((event) => event.truncated === true),
+      });
     } catch (error) {
       return errorEnvelope(error);
     }
@@ -349,6 +364,7 @@ export const searchComputerHistory = server.tool(
           summaryTimeZone: z.string().nullable(),
         }),
       ),
+      truncated: z.boolean().describe("True when event or memory content was reduced for the response budget"),
     }),
     annotations: {
       readOnlyHint: true,
@@ -360,10 +376,28 @@ export const searchComputerHistory = server.tool(
     try {
       const timeZone = await getTimeZone();
       const result = await searchHistory(input);
+      const boundedMemories = boundItemsToByteBudget(
+        result.memoryMatches,
+        SEARCH_MEMORY_BUDGET_BYTES,
+      );
+      const localized = result.eventMatches.map((event) =>
+        withLocalTimestamp(event, timeZone)
+      );
+      const eventBudget =
+        MAX_HISTORY_ITEMS_BYTES -
+        Buffer.byteLength(JSON.stringify(boundedMemories.items), "utf8");
+      const boundedEvents = boundItemsToByteBudget(
+        localized,
+        Math.max(0, eventBudget),
+      );
       return resultEnvelope({
         timeZone,
-        ...result,
-        eventMatches: result.eventMatches.map((event) => withLocalTimestamp(event, timeZone)),
+        eventMatches: boundedEvents.items,
+        memoryMatches: boundedMemories.items,
+        truncated:
+          boundedEvents.truncated ||
+          boundedMemories.truncated ||
+          localized.some((event) => event.truncated === true),
       });
     } catch (error) {
       return errorEnvelope(error);
@@ -439,7 +473,7 @@ function resultEnvelope<T>(value: T): {
   structuredContent: T;
 } {
   return {
-    content: [{ type: "text" as const, text: JSON.stringify(value, null, 2) }],
+    content: [{ type: "text" as const, text: JSON.stringify(value) }],
     structuredContent: value,
   };
 }

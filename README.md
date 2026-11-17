@@ -266,6 +266,12 @@ reports store counts. Both historical names remain available. Some clients
 normalize hyphens and underscores to the same name, so inspect that client's
 tool list and call the intended exact tool name.
 
+`get-recent-computer-history` and `search-computer-history` stream matching
+event files and keep the full serialized MCP response near 1 MiB. Their response
+includes a top-level `truncated` boolean; an individual event can also include
+`truncated: true` when captured text, accessibility content, arrays, or other
+oversized fields were reduced. The oldest events or matches are omitted first.
+
 ## Diagnostics
 
 Run the read-only doctor from a source checkout:

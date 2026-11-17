@@ -83,6 +83,7 @@ test("a retained MCP client can call a read-only tool on the first request after
     hours: 2, limit: 10, includeText: false,
   }));
   assert.equal(recent.timeZone, "Asia/Shanghai");
+  assert.equal(recent.truncated, false);
   const recentEvents = recent.events as Record<string, unknown>[];
   assert.equal(recentEvents.length, 1);
   assert.equal(recentEvents[0]?.timestamp, eventAt, "raw event timestamp stays UTC");
@@ -104,13 +105,15 @@ test("a retained MCP client can call a read-only tool on the first request after
   const rawBody = await rawRecent.text();
   const rawData = rawBody.split(/\r?\n/u).find((line) => line.startsWith("data:"));
   assert.ok(rawData, "MCP returns a JSON-RPC SSE message");
-  const rawMessage = JSON.parse(rawData.slice(5)) as { result?: { structuredContent?: { count?: number } } };
+  const rawMessage = JSON.parse(rawData.slice(5)) as { result?: { structuredContent?: { count?: number; truncated?: boolean } } };
   assert.equal(rawMessage.result?.structuredContent?.count, 1);
+  assert.equal(rawMessage.result?.structuredContent?.truncated, false);
 
   const search = structured(await connection.callTool("search-computer-history", {
     query: "Timezone fixture", hours: 2, limit: 10, includeText: false,
   }));
   assert.equal(search.timeZone, "Asia/Shanghai");
+  assert.equal(search.truncated, false);
   const eventMatches = search.eventMatches as Record<string, unknown>[];
   assert.equal(eventMatches.length, 1);
   assert.equal(eventMatches[0]?.timestamp, eventAt);
