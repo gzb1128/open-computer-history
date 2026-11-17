@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
 import { chmod, mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { once } from "node:events";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { promisify } from "node:util";
@@ -104,6 +105,10 @@ test("repeat install preserves optional services and data; explicit disable remo
   await mkdir(join(historyFile, ".."), { recursive: true });
   await writeFile(historyFile, '{"captureText":false}\n');
   await f.run("install", ["--with-ipc", "--with-summaries", "--start-collector"]);
+  assert.match(
+    await readFile(join(f.home, "Library/LaunchAgents", `${labels.pipeline}.plist`), "utf8"),
+    /<key>KeepAlive<\/key><dict><key>SuccessfulExit<\/key><false\/><\/dict>/,
+  );
   const plan = JSON.parse((await f.run("plan")).stdout);
   assert.deepEqual(plan.selection, { ipc: true, summaries: true, startCollector: true });
   assert.equal(plan.preserved.ipc, true);
@@ -118,6 +123,69 @@ test("repeat install preserves optional services and data; explicit disable remo
   await f.run("uninstall");
   assert.equal(await readFile(historyFile, "utf8"), '{"captureText":false}\n');
   assert.deepEqual((await readdir(f.loaded)).filter((name) => name !== "operations"), []);
+});
+
+test("service profiles make the LaunchAgent set explicit", async (t) => {
+  const f = await fixture();
+  t.after(() => rm(f.root, { recursive: true, force: true }));
+
+  const core = JSON.parse((await f.run("plan", ["--profile", "core"])).stdout);
+  assert.deepEqual(core.selection, {
+    ipc: false,
+    summaries: false,
+    startCollector: false,
+  });
+  assert.deepEqual(core.services.map((service: { label: string }) => service.label), [
+    labels.menu, labels.collector, labels.mcp,
+  ]);
+
+  const full = JSON.parse((await f.run("plan", ["--profile", "full"])).stdout);
+  assert.deepEqual(full.selection, {
+    ipc: true,
+    summaries: true,
+    startCollector: false,
+  });
+  assert.deepEqual(full.services.map((service: { label: string }) => service.label), [
+    labels.menu, labels.collector, labels.mcp, labels.ipc, labels.pipeline,
+  ]);
+
+  await assert.rejects(
+    f.run("plan", ["--profile", "core", "--with-ipc"]),
+    /cannot be combined/,
+  );
+  await assert.rejects(
+    f.run("plan", ["--profile", "everything"]),
+    /Unknown profile/,
+  );
+});
+
+test("install stops a legacy manual pipeline before replacing the runtime", async (t) => {
+  const f = await fixture();
+  t.after(() => rm(f.root, { recursive: true, force: true }));
+  const history = join(f.home, ".open-codex-computer-history");
+  const legacyLock = join(history, "pipeline.lock");
+  const script = join(f.root, "pipeline.mjs");
+  await mkdir(history, { recursive: true });
+  await writeFile(script, `
+import { rmSync } from "node:fs";
+const lock = process.argv[3];
+process.on("SIGTERM", () => {
+  rmSync(lock, { force: true });
+  process.exit(0);
+});
+setInterval(() => {}, 1000);
+`);
+  const child = spawn(process.execPath, [script, "run", legacyLock], { stdio: "ignore" });
+  t.after(() => {
+    if (child.exitCode === null) child.kill("SIGKILL");
+  });
+  await once(child, "spawn");
+  await writeFile(legacyLock, `${child.pid}\n`);
+  const exited = once(child, "exit");
+
+  await f.run("install", ["--with-summaries"]);
+  await exited;
+  await assert.rejects(readFile(legacyLock, "utf8"), { code: "ENOENT" });
 });
 
 test("upgrade preserves an installed MCP port and explicit override changes it", async (t) => {

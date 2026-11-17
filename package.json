@@ -45,6 +45,8 @@
     "ipc:run": "node --import tsx scripts/native-ipc.ts",
     "app:package": "scripts/package-macos-app.sh release",
     "install:local": "scripts/install-local.sh",
+    "install:local:core": "scripts/install-local.sh --profile core",
+    "install:local:full": "scripts/install-local.sh --profile full",
     "uninstall:local": "scripts/uninstall-local.sh"
   },
   "dependencies": {

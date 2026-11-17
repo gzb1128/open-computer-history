@@ -21,10 +21,12 @@ can use the development collector path.
 The collector LaunchAgent is loaded on a fresh install but has
 `RunAtLoad=false` and `KeepAlive=false`. The menu starts at login and has
 `KeepAlive=false`, so Quit does not respawn it. MCP starts at login and is
-kept alive; IPC and summaries are installed only when selected. Summary
-generation is separate from recording and invokes Codex only when that
-optional pipeline is enabled. The history directory and `config.json` are
-outside the installed bundle and survive upgrade and uninstall.
+kept alive. The summary pipeline restarts only after an unsuccessful exit;
+successful contention with another live pipeline exits cleanly. IPC and
+summaries are installed only when selected. Summary generation is separate
+from recording and invokes Codex only when that optional pipeline is enabled.
+The history directory and `config.json` are outside the installed bundle and
+survive upgrade and uninstall.
 
 The optional `config.json` `timeZone` selects the IANA zone used for new
 summary prompts and MCP display fields; absent, null, or blank uses the host

@@ -40,7 +40,7 @@ export function serviceManifest({ home, node, app, runtime, port = defaultMCPPor
     }),
     service("mcp", [node, join(runtime, "node_modules", "@mcp-use", "cli", "dist", "bin.js"), "start", "--host", "127.0.0.1", "--port", String(port), "--path", runtime], { keepAlive: true }),
     ...(ipc ? [service("ipc", [node, join(runtime, "bin", "native-ipc.mjs")], { keepAlive: true })] : []),
-    ...(summaries ? [service("pipeline", [node, join(runtime, "bin", "pipeline.mjs"), "run"], { keepAlive: true })] : []),
+    ...(summaries ? [service("pipeline", [node, join(runtime, "bin", "pipeline.mjs"), "run"], { keepAlive: { successfulExit: false } })] : []),
   ];
 }
 
@@ -49,6 +49,13 @@ export function plist(service) {
   const string = (value) => `<string>${xml(value)}</string>`;
   const key = (value) => `<key>${xml(value)}</key>`;
   const bool = (value) => value ? "<true/>" : "<false/>";
+  const keepAlive = (value) => {
+    if (typeof value === "boolean") return bool(value);
+    if (value?.successfulExit === false) {
+      return `<dict>${key("SuccessfulExit")}${bool(false)}</dict>`;
+    }
+    throw new Error(`Unsupported KeepAlive value: ${JSON.stringify(value)}`);
+  };
   const env = Object.entries(service.environment).map(([name, value]) => `${key(name)}${string(value)}`).join("");
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -57,7 +64,7 @@ ${key("Label")}${string(service.label)}
 ${key("ProgramArguments")}<array>${service.arguments.map(string).join("")}</array>
 ${key("WorkingDirectory")}${string(service.workingDirectory)}
 ${key("RunAtLoad")}${bool(service.runAtLoad)}
-${key("KeepAlive")}${bool(service.keepAlive)}
+${key("KeepAlive")}${keepAlive(service.keepAlive)}
 ${key("EnvironmentVariables")}<dict>${env}</dict>
 ${key("StandardOutPath")}${string(service.stdout)}
 ${key("StandardErrorPath")}${string(service.stderr)}

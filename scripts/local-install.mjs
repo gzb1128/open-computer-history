@@ -19,6 +19,13 @@ function argumentsFor(command, argv) {
       if (!argv[index + 1]) throw new Error(`Missing value for ${arg}`);
       const key = { "--from-bundle": "bundle", "--mcp-port": "port", "--home": "home", "--node": "node" }[arg];
       options[key] = argv[++index];
+    } else if (arg === "--profile") {
+      if (!argv[index + 1]) throw new Error(`Missing value for ${arg}`);
+      const profile = argv[++index];
+      if (!["core", "full"].includes(profile)) {
+        throw new Error(`Unknown profile: ${profile}. Expected core or full.`);
+      }
+      options.profile = profile;
     } else if (arg === "--with-ipc") options.ipc = true;
     else if (arg === "--without-ipc") options.ipc = false;
     else if (arg === "--with-summaries") options.summaries = true;
@@ -29,6 +36,13 @@ function argumentsFor(command, argv) {
   }
   options.home = resolve(options.home);
   options.node = resolve(options.node);
+  if (options.profile) {
+    if (options.ipc !== undefined || options.summaries !== undefined) {
+      throw new Error("--profile cannot be combined with --with-ipc, --without-ipc, --with-summaries, or --without-summaries");
+    }
+    options.ipc = options.profile === "full";
+    options.summaries = options.profile === "full";
+  }
   if (options.port !== undefined) options.port = validPort(options.port, "--mcp-port");
   if (options.bundle) options.bundle = resolve(options.bundle);
   return options;
@@ -133,6 +147,42 @@ async function runningRecorder(history) {
   } catch {
     return null;
   }
+}
+
+async function runningPipeline(history) {
+  try {
+    const pid = Number((await readFile(join(history, "pipeline.lock"), "utf8")).trim());
+    if (!Number.isSafeInteger(pid) || pid <= 0) return null;
+    const command = spawnSync("/bin/ps", ["-p", String(pid), "-o", "command="], { encoding: "utf8" });
+    return command.status === 0 &&
+      /(?:^|\/)pipeline\.(?:mjs|ts)(?:\s|$)/.test(command.stdout) &&
+      /(?:^|\s)(?:locked-)?run(?:\s|$)/.test(command.stdout)
+      ? pid
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+async function stopPipeline(pid) {
+  if (!pid) return;
+  try {
+    process.kill(pid, "SIGTERM");
+  } catch (error) {
+    if (!(error instanceof Error) || !("code" in error) || error.code !== "ESRCH") throw error;
+  }
+  for (let attempt = 0; attempt < 50; attempt++) {
+    const command = spawnSync("/bin/ps", ["-p", String(pid), "-o", "command="], { encoding: "utf8" });
+    if (
+      command.status !== 0 ||
+      !(/(?:^|\/)pipeline\.(?:mjs|ts)(?:\s|$)/.test(command.stdout) &&
+        /(?:^|\s)(?:locked-)?run(?:\s|$)/.test(command.stdout))
+    ) {
+      return;
+    }
+    await new Promise((done) => setTimeout(done, 100));
+  }
+  throw new Error(`Legacy Computer History pipeline ${pid} did not stop`);
 }
 
 function launchctl(args, { allowFailure = false } = {}) {
@@ -310,6 +360,7 @@ async function install(options, state) {
     }
     plan = renderPlan(options, state);
     await stopRecorder(recorderToStop);
+    await stopPipeline(await runningPipeline(path.history));
     if (!process.env.OPEN_HISTORY_INSTALL_LAUNCHCTL && await portIsOpen(options.port)) {
       throw new Error(`Port ${options.port} is already in use after stopping the old MCP service`);
     }

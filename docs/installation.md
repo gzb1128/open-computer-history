@@ -23,7 +23,7 @@ From a source checkout, install dependencies once, then build and install:
 ```sh
 npm ci
 scripts/install-local.sh --plan
-scripts/install-local.sh
+scripts/install-local.sh --profile core
 ```
 
 `--plan` reads the current service choices and prints the proposed paths and
@@ -41,6 +41,17 @@ waits for an explicit Resume or Start action; `--start-collector` opts into
 starting it at installation and login. The menu has no KeepAlive, so Quit leaves
 it closed. MCP serves `http://127.0.0.1:3317/mcp`.
 
+Use a service profile to make the installed LaunchAgent set explicit:
+
+```sh
+scripts/install-local.sh --profile core
+scripts/install-local.sh --profile full
+```
+
+`core` installs the menu, collector, and MCP. `full` also installs native IPC and
+automatic summaries. A profile cannot be combined with the individual
+`--with-*` or `--without-*` service flags.
+
 Native IPC and automatic summaries are optional:
 
 ```sh
@@ -48,14 +59,16 @@ scripts/install-local.sh --with-ipc --with-summaries
 scripts/install-local.sh --without-ipc --without-summaries
 ```
 
-An upgrade preserves previously installed IPC and summary agents, plus an
-existing collector's automatic start choice. A manually running collector is
-stopped during replacement and started once from the stable app bundle;
-this does not enable recording at future logins. Explicit `--without-*` and
-`--no-start-collector` flags override those preserved choices. The installer
-stages the new bundle, stops managed agents, swaps the app and runtime, and
-restores the old installation if service registration or MCP startup fails.
-History data and `config.json` are never part of that swap.
+An upgrade without a profile preserves previously installed IPC and summary
+agents, plus an existing collector's automatic start choice. A manually running
+collector is stopped during replacement and started once from the stable app
+bundle; this does not enable recording at future logins. The installer also
+stops a recognized legacy manual summary pipeline before swapping runtimes so
+the old and new lock implementations cannot run concurrently. Explicit
+`--without-*` and `--no-start-collector` flags override those preserved choices.
+The installer stages the new bundle, stops managed agents, swaps the app and
+runtime, and restores the old installation if service registration or MCP
+startup fails. History data and `config.json` are never part of that swap.
 
 To remove installed services and binaries while preserving history and
 settings, run:

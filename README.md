@@ -68,7 +68,7 @@ plan before enabling user LaunchAgents:
 npm ci
 scripts/build-local-bundle.sh
 scripts/install-local.sh --plan
-scripts/install-local.sh --from-bundle "dist/Open Computer History Bundle"
+scripts/install-local.sh --from-bundle "dist/Open Computer History Bundle" --profile core
 ```
 
 The installed app is `~/.local/share/Open Computer History.app`; the Node
@@ -76,6 +76,9 @@ runtime is `~/.local/share/open-computer-history/runtime`. Fresh installs load
 the menu, collector, and MCP services. Recording starts only after an explicit
 Start or Resume action unless `--start-collector` is specified. Native IPC
 (`--with-ipc`) and automatic summaries (`--with-summaries`) are optional.
+Use `--profile core` for the menu, collector, and MCP only, or `--profile full`
+to include IPC and automatic summaries as separate agents. Upgrades preserve
+the previous profile unless one is specified explicitly.
 The installed MCP endpoint is `http://127.0.0.1:3317/mcp`.
 
 See [local installation](docs/installation.md) for prebuilt installs, service

@@ -1,9 +1,7 @@
 import {
   mkdir,
-  open,
   readFile,
   rename,
-  rm,
   writeFile,
 } from "node:fs/promises";
 import { join } from "node:path";
@@ -74,13 +72,32 @@ export async function runPipelineTick(
   return results;
 }
 
-export async function runPipelineLoop(): Promise<never> {
-  const releaseLock = await acquireLock();
+export async function runPipelineLoop(
+  onShutdown?: () => Promise<void>,
+): Promise<never> {
+  let stopping = false;
+  const parentPID = process.ppid;
+  const serviceOwnerPID = Number(process.env.OPEN_HISTORY_PIPELINE_OWNER_PID);
   const shutdown = () => {
-    void releaseLock().finally(() => process.exit(0));
+    if (stopping) return;
+    stopping = true;
+    void (onShutdown?.() ?? Promise.resolve()).finally(() => process.exit(0));
   };
-  process.once("SIGINT", shutdown);
-  process.once("SIGTERM", shutdown);
+  process.on("SIGHUP", shutdown);
+  process.on("SIGINT", shutdown);
+  process.on("SIGTERM", shutdown);
+  process.on("SIGQUIT", shutdown);
+  const parentWatch = setInterval(() => {
+    if (
+      process.ppid !== parentPID ||
+      (Number.isSafeInteger(serviceOwnerPID) &&
+        serviceOwnerPID > 0 &&
+        !processIsAlive(serviceOwnerPID))
+    ) {
+      shutdown();
+    }
+  }, 1_000);
+  parentWatch.unref();
 
   while (true) {
     try {
@@ -124,22 +141,6 @@ async function writeState(state: PipelineState): Promise<void> {
   await rename(temporaryPath, path);
 }
 
-async function acquireLock(): Promise<() => Promise<void>> {
-  const path = join(historyHome(), "pipeline.lock");
-  await mkdir(historyHome(), { recursive: true });
-  let handle;
-  try {
-    handle = await open(path, "wx", 0o600);
-  } catch {
-    throw new Error(`Computer History pipeline is already running: ${path}`);
-  }
-  await handle.writeFile(`${process.pid}\n`);
-  return async () => {
-    await handle.close();
-    await rm(path, { force: true });
-  };
-}
-
 function bucketKey(level: SummaryLevel, start: Date): string {
   return `${level}:${start.toISOString()}`;
 }
@@ -148,4 +149,13 @@ function delay(milliseconds: number): Promise<void> {
   return new Promise((resolvePromise) =>
     setTimeout(resolvePromise, milliseconds),
   );
+}
+
+function processIsAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return !(error instanceof Error && "code" in error && error.code === "ESRCH");
+  }
 }
