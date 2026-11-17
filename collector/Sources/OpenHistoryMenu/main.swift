@@ -94,8 +94,7 @@ struct OpenHistoryMenuApp: App {
             }
             .padding(14)
             }
-            .frame(width: 390)
-            .frame(maxHeight: 680)
+            .frame(width: 390, height: 680)
         } label: {
             Image(systemName: controller.iconName)
         }
